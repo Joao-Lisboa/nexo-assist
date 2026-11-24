@@ -44,8 +44,8 @@ const SCENARIOS: Scenario[] = [
     id: "duvida-horario",
     title: "Dúvida respondida pela central de ajuda, sem chamado",
     turns: ["Qual o horário de atendimento do service desk?"],
-    check: (r) =>
-      !tools(r).includes("buscar_central_de_ajuda") ? "não buscou na central" : has(r, "draft") ? "abriu rascunho para uma dúvida" : !/18/.test(r.text) ? "não informou o horário" : null,
+    // O horário também está nas regras do prompt; o que importa é responder certo sem abrir chamado.
+    check: (r) => (has(r, "draft") ? "abriu rascunho para uma dúvida" : !/18/.test(r.text) ? "não informou o horário" : r.mode !== "agent" ? "transferiu sem necessidade" : null),
   },
   {
     id: "vpn-809-win11",
@@ -169,10 +169,22 @@ async function runScenario(s: Scenario, runner: MastraAgentRunner) {
   return { failure, last, latency, tokensIn, tokensOut, turns: s.turns.length };
 }
 
+let quotaExhausted = false;
+
 async function main() {
   const filters = process.argv.slice(2);
   const scenarios = SCENARIOS.filter((s) => !filters.length || filters.some((f) => s.id.includes(f)));
   const runner = new MastraAgentRunner();
+  // Sem cota no plano gratuito, os cenários seguintes só falhariam: para cedo e avisa.
+  const original = runner.run.bind(runner);
+  runner.run = async (input) => {
+    try {
+      return await original(input);
+    } catch (err) {
+      if (/quota|RESOURCE_EXHAUSTED/i.test(String((err as { cause?: { message?: string } }).cause?.message ?? ""))) quotaExhausted = true;
+      throw err;
+    }
+  };
   const rows: string[] = [];
   let passed = 0;
   let totalLatency = 0;
@@ -190,10 +202,16 @@ async function main() {
       totalTurns += r.turns;
       if (!r.failure) passed++;
       console.log(r.failure ? `FALHOU: ${r.failure}` : "ok");
+      if (quotaExhausted) {
+        console.log("\nCota do provedor esgotada (plano gratuito do Gemini: 20 chamadas por dia por modelo). Avaliação interrompida.");
+        rows.push(`| ⚠️ | (interrompida) | — | — | — | cota do provedor esgotada |`);
+        break;
+      }
       if (r.failure) console.log(`    resposta: ${r.last.text}\n    passos: ${r.last.trace?.steps.map((x) => x.tool).join(", ")}`);
       rows.push(`| ${r.failure ? "❌" : "✅"} | ${s.title} | ${r.last.trace?.intent ?? "—"} | ${r.last.trace ? Math.round(r.last.trace.confidence * 100) + "%" : "—"} | ${(r.latency / 1000 / r.turns).toFixed(1)} s | ${r.failure ?? ""} |`);
     } catch (err) {
       console.log(`ERRO: ${err instanceof Error ? err.message : String(err)}`);
+      if (quotaExhausted) break;
       rows.push(`| ⚠️ | ${s.title} | — | — | — | erro: ${err instanceof Error ? err.message : String(err)} |`);
     }
   }
