@@ -38,7 +38,7 @@ Abra <http://localhost:3000>. Os bancos SQLite são criados em `./data` na prime
 ### Outros comandos
 
 ```bash
-npm test            # 32 testes: regras do service desk e fluxos completos da conversa (sem LLM)
+npm test            # 33 testes: regras do service desk e fluxos completos da conversa (sem LLM)
 npm run eval        # 13 cenários com o modelo de verdade; gera docs/avaliacao.md
 npm run typecheck   # TypeScript estrito
 npm run lint
@@ -121,7 +121,7 @@ Tudo isso aparece no painel de decisão, na seção "Regras do service desk apli
 
 ## Como garanti a qualidade das decisões
 
-1. **Testes determinísticos (`npm test`, 32 testes, sem LLM).**
+1. **Testes determinísticos (`npm test`, 33 testes, sem LLM).**
    - Regras: horário útil (fim de semana, virada de expediente), SLA e chamado vencido, prioridade por impacto e urgência, duplicidade, janela de reabertura.
    - Integração do `ConversationService` com um **agent roteirizado que chama as ferramentas reais** num banco temporário: confirmação antes de criar, "sim" por texto, duplicidade, privacidade, chamado vencido, transferência pausando o agent e retomando com a fala do analista no histórico, confiança baixa, caso crítico, sistema de chamados fora do ar (503 com o rascunho preservado), limite de mensagens e concorrência entre analistas.
 2. **Avaliação com o modelo de verdade (`npm run eval`).** São 13 cenários que cobrem as histórias do PRD. Cada um verifica o *resultado observável* do turno (blocos exibidos, transferência e motivo, rascunho e prioridade, intenção registrada), e não o texto, que varia entre execuções. O script gera `docs/avaliacao.md` com aprovação, intenção, confiança e tempo por cenário. Use-o como regressão ao mexer no prompt ou trocar de modelo.
@@ -135,7 +135,7 @@ Tudo isso aparece no painel de decisão, na seção "Regras do service desk apli
 
 - **Custo e velocidade:** é um modelo rápido e barato com bom *tool calling*. O PRD pede uso consciente do modelo pensando em custo por conversa. O "raciocínio" fica no nível baixo (`LLM_THINKING_LEVEL=low`), porque as decisões difíceis já estão nas ferramentas.
 - **Plano gratuito** no AI Studio: quem avalia consegue rodar sem cartão.
-- **Resiliência:** se o modelo principal estiver sobrecarregado (503), sem cota (429) ou indisponível (404), o agent tenta os modelos de `LLM_FALLBACK_MODELS`. Ele só troca de modelo se nada aconteceu no turno ainda, para não repetir ações. Se todos falharem, a resposta oferece "Tentar de novo", que repete a pergunta original, e "Falar com um analista", que não depende do modelo. O modelo que respondeu aparece no painel de decisão.
+- **Resiliência:** se o modelo principal estiver sobrecarregado (503), sem cota (429) ou indisponível (404), o agent tenta os modelos de `LLM_FALLBACK_MODELS`. Ele só troca de modelo se nada aconteceu no turno ainda, para não repetir ações. Modelo que não começa a responder em 15 s também é trocado, e quem falhou vai para o fim da fila por 3 minutos, para as mensagens seguintes não esperarem por ele de novo. Se todos falharem, a resposta oferece "Tentar de novo", que repete a pergunta original, e "Falar com um analista", que não depende do modelo. O modelo que respondeu aparece no painel de decisão.
 - Comecei com o Gemini 2.5 Flash, mas o Google o retirou para contas novas (erro 404 pedindo o 3.8 Flash). Por isso o modelo é configurável e o runner trata as duas famílias: nível de raciocínio no 3.x, orçamento de tokens no 2.5.
 - **Trocar de provedor** é trocar o modelo em `src/agent/runner.ts`. O resto do sistema depende só da interface `AgentRunner`.
 

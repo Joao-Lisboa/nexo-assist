@@ -73,16 +73,49 @@ export function modelChain(): string[] {
 export function isProviderFailure(err: unknown): boolean {
   let cur: unknown = err;
   for (let i = 0; i < 5 && cur; i++) {
-    const e = cur as { statusCode?: number; isRetryable?: boolean; cause?: unknown };
+    const e = cur as { statusCode?: number; isRetryable?: boolean; cause?: unknown; name?: string; timeoutType?: string };
     if (e.isRetryable === true) return true;
+    // Modelo que não responde a tempo (sobrecarga silenciosa) também conta.
+    if (e.timeoutType || e.name === "MastraTimeoutError") return true;
     if (typeof e.statusCode === "number" && [404, 408, 429, 500, 502, 503, 504].includes(e.statusCode)) return true;
     cur = e.cause;
   }
   return false;
 }
 
+/**
+ * Memória curta de modelos com problema: depois de uma falha, o modelo vai
+ * para o fim da fila por alguns minutos, e as próximas mensagens não esperam
+ * por ele de novo.
+ */
+export class ModelHealth {
+  private readonly failedAt = new Map<string, number>();
+  constructor(
+    private readonly cooldownMs = 3 * 60_000,
+    private readonly now: () => number = () => Date.now(),
+  ) {}
+
+  markFailed(model: string): void {
+    this.failedAt.set(model, this.now());
+  }
+
+  markOk(model: string): void {
+    this.failedAt.delete(model);
+  }
+
+  /** Mantém a ordem configurada, mas manda para o fim quem falhou há pouco. */
+  order(models: string[]): string[] {
+    const cooling = (m: string) => {
+      const at = this.failedAt.get(m);
+      return at !== undefined && this.now() - at < this.cooldownMs;
+    };
+    return [...models.filter((m) => !cooling(m)), ...models.filter(cooling)];
+  }
+}
+
 export class MastraAgentRunner implements AgentRunner {
   private readonly agents = new Map<string, Agent>();
+  private readonly health = new ModelHealth();
   private readonly google: ReturnType<typeof createGoogleGenerativeAI>;
 
   constructor(apiKey = process.env.GOOGLE_GENERATIVE_AI_API_KEY) {
@@ -108,14 +141,16 @@ export class MastraAgentRunner implements AgentRunner {
   async run(input: AgentRunInput): Promise<AgentRunOutput> {
     const started = Date.now();
     let lastError: unknown;
-    for (const model of modelChain()) {
+    for (const model of this.health.order(modelChain())) {
       const stepsBefore = input.turn.steps.length;
       let emitted = false;
       try {
         const out = await this.runWith(model, input, () => (emitted = true));
+        this.health.markOk(model);
         return { ...out, latencyMs: Date.now() - started };
       } catch (err) {
         lastError = err;
+        if (isProviderFailure(err)) this.health.markFailed(model);
         // Só troca de modelo se nada aconteceu ainda neste turno (sem texto e
         // sem ferramentas executadas): assim nenhum efeito é repetido.
         const untouched = !emitted && input.turn.steps.length === stepsBefore;
@@ -134,7 +169,9 @@ export class MastraAgentRunner implements AgentRunner {
       requestContext,
       maxSteps: 8,
       // Poucas repetições no mesmo modelo: com sobrecarga, é mais rápido ir para o próximo.
-      modelSettings: { temperature: 0.2, maxOutputTokens: 1200, maxRetries: 1, timeout: { totalMs: 60_000 } },
+      // firstChunkMs: um modelo sobrecarregado que não começa a responder em 15 s
+      // é abandonado em favor do próximo, em vez de esgotar o tempo todo.
+      modelSettings: { temperature: 0.2, maxOutputTokens: 1200, maxRetries: 1, timeout: { firstChunkMs: 15_000, totalMs: 45_000 } },
       providerOptions: { google: { thinkingConfig: thinkingConfig(model) } },
     });
     let text = "";
