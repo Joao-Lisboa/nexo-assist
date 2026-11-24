@@ -163,7 +163,7 @@ describe("transferência para analista", () => {
       await call("transferir_para_analista", { motivo: "chamado_vencido", resumo: "INC-20311 vencido", numeroChamado: "INC-20311" });
       return "Encaminhei para o Suporte N2.";
     });
-    await t.send("u-ana", "quero falar com um analista");
+    await t.send("u-ana", "isso já passou do prazo, resolve pra mim");
     expect(t.runner.calls.length).toBe(1);
 
     await t.send("u-ana", "alô?");
@@ -186,6 +186,36 @@ describe("transferência para analista", () => {
     expect(t.runner.calls.length).toBe(2);
     // o histórico enviado ao modelo inclui a fala do analista
     expect(t.runner.calls[1]?.history.some((h) => h.content.includes("Aqui é o Rafael"))).toBe(true);
+  });
+
+  it("pedido explícito por uma pessoa transfere sem chamar o modelo", async () => {
+    const t = await setup();
+    const events = await t.send("u-ana", "Quero falar com um analista, por favor");
+    expect(t.runner.calls.length).toBe(0);
+    const conv = await t.conversations.activeConversation(await t.user("u-ana"));
+    expect(conv.mode).toBe("waiting_human");
+    expect(conv.handoffReason).toBe("pedido_do_funcionario");
+    expect(lastAgentBlocks(events).some((b) => b.kind === "handoff")).toBe(true);
+    const msg = events.find((e) => e.type === "message" && e.message.role === "agent");
+    expect(msg?.type === "message" && msg.message.trace?.model).toBe("regra determinística (sem LLM)");
+  });
+
+  it("'Tentar de novo' depois de falha do modelo repete a pergunta original", async () => {
+    const t = await setup();
+    t.runner.push(async () => {
+      throw new Error("503 high demand");
+    });
+    const failed = await t.send("u-ana", "Qual o horário do service desk?");
+    expect(lastAgentBlocks(failed).some((b) => b.kind === "quick_replies")).toBe(true);
+
+    t.runner.push(async (call) => {
+      await call("registrar_entendimento", understand("duvida"));
+      return "De segunda a sexta, das 8h às 18h.";
+    });
+    await t.send("u-ana", "Tentar de novo");
+    const history = t.runner.calls[1]?.history ?? [];
+    expect(history.at(-1)).toEqual({ role: "user", content: "Qual o horário do service desk?" });
+    expect(history.some((h) => h.content.includes("Tive um problema"))).toBe(false);
   });
 
   it("confiança muito baixa sem pergunta vira transferência automática", async () => {

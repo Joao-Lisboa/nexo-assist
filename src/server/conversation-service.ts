@@ -38,6 +38,12 @@ type Emit = (event: StreamEvent) => void;
 const HISTORY_WINDOW = 16;
 const FORCE_HANDOFF_BELOW = 0.4;
 
+/** Pedido explícito por uma pessoa: transferência imediata, sem depender do modelo. */
+const HUMAN_REQUEST =
+  /\b(falar|conversar|chamar|chama|quero|preciso de|me passa|passa)\b[^.?!]{0,20}\b(analista|atendente|humano|pessoa|t[eé]cnico|algu[eé]m do suporte)\b/i;
+const RETRY = /^(tentar de novo|tente de novo|tenta de novo)[\s.!]*$/i;
+const FAILED_MODEL = "indisponível";
+
 const AFFIRMATIVE = /^(sim|s|pode|pode sim|pode criar|pode abrir|pode atualizar|confirmo|confirmar|confirma|ok|okay|isso|isso mesmo|correto|certo|perfeito|manda|beleza|claro)[\s.!,]*$/i;
 const NEGATIVE = /^(cancela|cancelar|cancele|nao|não|não precisa|nao precisa|deixa|deixa pra lá|esquece)[\s.!,]*$/i;
 
@@ -193,8 +199,59 @@ export class ConversationService {
       return;
     }
 
+    if (HUMAN_REQUEST.test(text)) {
+      await this.directHandoff(user, conversation.id, text, emit);
+      emit({ type: "done" });
+      return;
+    }
+
     await this.runAgentTurn(user, conversation.id, pending, emit);
     emit({ type: "done" });
+  }
+
+  /**
+   * O funcionário pediu uma pessoa: regra do service desk, não precisa do
+   * modelo. Funciona mesmo com o LLM fora do ar.
+   */
+  private async directHandoff(user: User, conversationId: string, text: string, emit: Emit): Promise<void> {
+    const conversation = await this.conversationRow(conversationId);
+    const recent = (await this.history(conversationId)).filter((m) => m.role === "user" && !RETRY.test(m.content)).slice(-4);
+    let reason: HandoffReason = "pedido_do_funcionario";
+    let overdueNote = "";
+    if (conversation.relatedTicket) {
+      try {
+        const t = await this.deps.tickets.get(conversation.relatedTicket, user.id);
+        if (toTicketView(t, this.now()).overdue) {
+          reason = "chamado_vencido";
+          overdueNote = ` O ${t.number} está com o prazo vencido.`;
+        }
+      } catch {
+        // sem detalhes do chamado: segue como pedido do funcionário
+      }
+    }
+    const summary =
+      `${user.name} pediu para falar com um analista.${overdueNote}` +
+      (conversation.relatedTicket ? ` Chamado em foco: ${conversation.relatedTicket}.` : "") +
+      (recent.length ? ` Últimas mensagens: ${recent.map((m) => `"${m.content.slice(0, 160)}"`).join("; ")}.` : "");
+    const rules: string[] = ["Pedido explícito por uma pessoa: transferência imediata, sem passar pelo modelo."];
+    const handoff = await this.applyHandoff(conversationId, user.id, { reason, summary, ticketNumber: conversation.relatedTicket }, null);
+    const content = `Certo, encaminhei para o Suporte ${handoff.team} com o resumo da conversa. Um analista continua o atendimento por aqui — primeiro contato ${handoff.dueLabel}.`;
+    const msg = await this.insertMessage(conversationId, "agent", null, content, [{ kind: "handoff", team: handoff.team, dueLabel: handoff.dueLabel }], {
+      understood: `${user.name} quer falar com uma pessoa: "${text.slice(0, 120)}".`,
+      intent: "falar_com_analista",
+      confidence: 1,
+      reasoning: "A regra do service desk manda transferir quando o funcionário pede. Não é preciso interpretar nada além disso.",
+      action: `Transferiu para o Suporte ${handoff.team} com resumo do caso.`,
+      steps: [{ tool: "transferir_para_analista", label: "chamou um analista", input: `motivo: ${HANDOFF_REASON_LABEL[reason].toLowerCase()}`, output: `Suporte ${handoff.team}`, ok: true, durationMs: 0 }],
+      rules: [...rules, `Transferência: ${HANDOFF_REASON_LABEL[reason]}. O agent fica pausado até um analista liberar.`],
+      model: "regra determinística (sem LLM)",
+      latencyMs: 0,
+      tokens: null,
+    });
+    emit({ type: "message", message: toMessageView(msg, new Map()) });
+    const sys = await this.insertMessage(conversationId, "system", null, `Transferida para Suporte ${handoff.team}`, [], null);
+    emit({ type: "message", message: toMessageView(sys, new Map()) });
+    emit({ type: "conversation", conversation: await this.summary(await this.conversationRow(conversationId)) });
   }
 
   private async runAgentTurn(user: User, conversationId: string, pending: DraftRow | null, emit: Emit): Promise<void> {
@@ -256,7 +313,7 @@ export class ConversationService {
           action: "Nenhuma ação tomada; pediu para tentar de novo.",
           steps: turn.steps,
           rules: ["Falha do modelo: nada foi criado ou alterado."],
-          model: "indisponível",
+          model: FAILED_MODEL,
           latencyMs: 0,
           tokens: null,
         },
@@ -544,7 +601,16 @@ export class ConversationService {
       .orderBy(desc(messages.id))
       .limit(HISTORY_WINDOW);
     const out: HistoryMessage[] = [];
+    let previousFailed = false;
     for (const r of rows.reverse()) {
+      const failed = r.role === "agent" && !!r.trace && (JSON.parse(r.trace) as DecisionTrace).model === FAILED_MODEL;
+      // Falhas do modelo e o "Tentar de novo" que as segue não entram no contexto:
+      // o modelo vê só a pergunta original e responde a ela.
+      if (failed || (r.role === "user" && previousFailed && RETRY.test(r.content))) {
+        previousFailed = failed || previousFailed;
+        continue;
+      }
+      previousFailed = false;
       if (r.role === "user") out.push({ role: "user", content: r.content });
       else if (r.role === "agent") out.push({ role: "assistant", content: annotate(r.content, JSON.parse(r.blocks) as UiBlock[]) });
       else if (r.role === "analyst") out.push({ role: "assistant", content: `[Mensagem do analista humano] ${r.content}` });

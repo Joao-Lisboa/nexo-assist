@@ -57,53 +57,101 @@ function thinkingConfig(model: string): { thinkingLevel: ThinkingLevel } | { thi
   return { thinkingLevel: ["minimal", "low", "medium", "high"].includes(level) ? level : "low" };
 }
 
+/** Modelo principal seguido dos alternativos, na ordem em que serão tentados. */
+export function modelChain(): string[] {
+  const fallbacks = (process.env.LLM_FALLBACK_MODELS ?? "gemini-3.5-flash,gemini-3.5-flash-lite")
+    .split(",")
+    .map((m) => m.trim())
+    .filter(Boolean);
+  return [...new Set([modelId(), ...fallbacks])];
+}
+
+/**
+ * Falha do provedor que vale tentar em outro modelo: sobrecarga (503),
+ * cota (429), erro interno (5xx) ou modelo indisponível para a conta (404).
+ */
+export function isProviderFailure(err: unknown): boolean {
+  let cur: unknown = err;
+  for (let i = 0; i < 5 && cur; i++) {
+    const e = cur as { statusCode?: number; isRetryable?: boolean; cause?: unknown };
+    if (e.isRetryable === true) return true;
+    if (typeof e.statusCode === "number" && [404, 408, 429, 500, 502, 503, 504].includes(e.statusCode)) return true;
+    cur = e.cause;
+  }
+  return false;
+}
+
 export class MastraAgentRunner implements AgentRunner {
-  private readonly agent: Agent;
-  private readonly model = modelId();
+  private readonly agents = new Map<string, Agent>();
+  private readonly google: ReturnType<typeof createGoogleGenerativeAI>;
 
   constructor(apiKey = process.env.GOOGLE_GENERATIVE_AI_API_KEY) {
     if (!apiKey) throw new Error("GOOGLE_GENERATIVE_AI_API_KEY não configurada. Copie .env.example para .env e preencha a chave.");
-    const google = createGoogleGenerativeAI({ apiKey });
-    this.agent = new Agent({
-      id: "nexo-assist",
-      name: "Nexo Assist",
-      instructions: ({ requestContext }) => buildInstructions(requestContext.get(TURN_KEY) as TurnContext),
-      model: google(this.model),
-      tools: nexoTools,
-    });
+    this.google = createGoogleGenerativeAI({ apiKey });
   }
 
-  async run({ turn, history, onText }: AgentRunInput): Promise<AgentRunOutput> {
+  private agentFor(model: string): Agent {
+    let agent = this.agents.get(model);
+    if (!agent) {
+      agent = new Agent({
+        id: "nexo-assist",
+        name: "Nexo Assist",
+        instructions: ({ requestContext }) => buildInstructions(requestContext.get(TURN_KEY) as TurnContext),
+        model: this.google(model),
+        tools: nexoTools,
+      });
+      this.agents.set(model, agent);
+    }
+    return agent;
+  }
+
+  async run(input: AgentRunInput): Promise<AgentRunOutput> {
     const started = Date.now();
+    let lastError: unknown;
+    for (const model of modelChain()) {
+      const stepsBefore = input.turn.steps.length;
+      let emitted = false;
+      try {
+        const out = await this.runWith(model, input, () => (emitted = true));
+        return { ...out, latencyMs: Date.now() - started };
+      } catch (err) {
+        lastError = err;
+        // Só troca de modelo se nada aconteceu ainda neste turno (sem texto e
+        // sem ferramentas executadas): assim nenhum efeito é repetido.
+        const untouched = !emitted && input.turn.steps.length === stepsBefore;
+        console.warn(`[agent] ${model} falhou${untouched && isProviderFailure(err) ? ", tentando o próximo modelo" : ""}:`, err instanceof Error ? err.message : err);
+        if (!(untouched && isProviderFailure(err))) break;
+      }
+    }
+    throw new AgentUnavailableError(lastError);
+  }
+
+  private async runWith(model: string, { turn, history, onText }: AgentRunInput, onEmit: () => void): Promise<Omit<AgentRunOutput, "latencyMs">> {
     const requestContext = new RequestContext();
     requestContext.set(TURN_KEY, turn);
-
+    const messages = history.map((m) => ({ role: m.role, content: m.content })) as unknown as Parameters<Agent["stream"]>[0];
+    const stream = await this.agentFor(model).stream(messages, {
+      requestContext,
+      maxSteps: 8,
+      // Poucas repetições no mesmo modelo: com sobrecarga, é mais rápido ir para o próximo.
+      modelSettings: { temperature: 0.2, maxOutputTokens: 1200, maxRetries: 1, timeout: { totalMs: 60_000 } },
+      providerOptions: { google: { thinkingConfig: thinkingConfig(model) } },
+    });
     let text = "";
-    try {
-      const messages = history.map((m) => ({ role: m.role, content: m.content })) as unknown as Parameters<Agent["stream"]>[0];
-      const stream = await this.agent.stream(messages, {
-        requestContext,
-        maxSteps: 8,
-        modelSettings: { temperature: 0.2, maxOutputTokens: 1200, timeout: { totalMs: 60_000 } },
-        providerOptions: { google: { thinkingConfig: thinkingConfig(this.model) } },
-      });
-      for await (const chunk of stream.fullStream) {
-        if (chunk.type === "text-delta") {
-          text += chunk.payload.text;
-          onText(chunk.payload.text);
-        } else if (chunk.type === "error") {
-          throw chunk.payload.error;
-        }
+    for await (const chunk of stream.fullStream) {
+      if (chunk.type === "text-delta") {
+        text += chunk.payload.text;
+        onEmit();
+        onText(chunk.payload.text);
+      } else if (chunk.type === "error") {
+        throw chunk.payload.error;
       }
-      const usage = await stream.usage;
-      return {
-        text: text.trim(),
-        model: this.model,
-        latencyMs: Date.now() - started,
-        tokens: usage ? { input: usage.inputTokens ?? 0, output: usage.outputTokens ?? 0 } : null,
-      };
-    } catch (err) {
-      throw new AgentUnavailableError(err);
     }
+    const usage = await stream.usage;
+    return {
+      text: text.trim(),
+      model,
+      tokens: usage ? { input: usage.inputTokens ?? 0, output: usage.outputTokens ?? 0 } : null,
+    };
   }
 }
