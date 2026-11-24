@@ -25,7 +25,10 @@ export interface Container {
 const globalForContainer = globalThis as unknown as { __nexoContainer?: Promise<Container> };
 
 export function dataDir(): string {
-  return path.resolve(process.env.DATA_DIR ?? "data");
+  // turbopackIgnore: o banco muda a cada mensagem; sem isso o bundler trata a
+  // pasta como dependência e recompila (e recarrega a página) a cada escrita.
+  const dir = process.env.DATA_DIR ?? "data";
+  return path.resolve(/*turbopackIgnore: true*/ process.cwd(), dir);
 }
 
 async function build(): Promise<Container> {
