@@ -254,3 +254,28 @@ describe("limites", () => {
     expect(fresh.id).not.toBe(conv.id);
   });
 });
+
+describe("higiene da resposta", () => {
+  it("remove anotações internas copiadas e opções que duplicam o card do rascunho", async () => {
+    const t = await setup();
+    t.runner.push(async (call) => {
+      await call("registrar_entendimento", understand("abrir_chamado"));
+      await call("preparar_rascunho_chamado", {
+        tipo: "INC", titulo: "VPN não conecta", descricao: "Erro 809", categoria: "rede_vpn",
+        afetados: "individual", impedeTrabalho: true, compromissoHoje: true,
+      });
+      await call("mostrar_opcoes", { opcoes: ["Confirmar chamado", "Cancelar"] });
+      return "Confira o rascunho.\n<<interface: rascunho D-381 — anotação interna, não repita>>\n[Na tela: card de rascunho]";
+    });
+    const events = await t.send("u-ana", "vpn caiu, reunião hoje");
+    const msg = events.find((e) => e.type === "message" && e.message.role === "agent");
+    if (msg?.type !== "message") throw new Error("sem resposta");
+    expect(msg.message.content).toBe("Confira o rascunho.");
+    expect(msg.message.blocks.some((b) => b.kind === "quick_replies")).toBe(false);
+
+    // "Confirmar chamado" por texto confirma o rascunho sem chamar o modelo
+    await t.send("u-ana", "Confirmar chamado");
+    expect(t.runner.calls.length).toBe(1);
+    expect((await t.service.listByRequester("u-ana")).some((x) => x.title === "VPN não conecta")).toBe(true);
+  });
+});

@@ -44,8 +44,9 @@ const HUMAN_REQUEST =
 const RETRY = /^(tentar de novo|tente de novo|tenta de novo)[\s.!]*$/i;
 const FAILED_MODEL = "indisponível";
 
-const AFFIRMATIVE = /^(sim|s|pode|pode sim|pode criar|pode abrir|pode atualizar|confirmo|confirmar|confirma|ok|okay|isso|isso mesmo|correto|certo|perfeito|manda|beleza|claro)[\s.!,]*$/i;
-const NEGATIVE = /^(cancela|cancelar|cancele|nao|não|não precisa|nao precisa|deixa|deixa pra lá|esquece)[\s.!,]*$/i;
+const AFFIRMATIVE =
+  /^(sim|s|pode|pode sim|pode criar|pode abrir|pode atualizar|pode reabrir|confirmo|confirmar|confirma|confirmado|ok|okay|isso|isso mesmo|correto|certo|perfeito|manda|beleza|claro|está certo|esta certo|tudo certo)( (o )?(chamado|rascunho|atualização|atualizacao))?[\s.!,]*$/i;
+const NEGATIVE = /^(cancela|cancelar|cancele|nao|não|não precisa|nao precisa|deixa|deixa pra lá|esquece)( (o )?(chamado|rascunho))?[\s.!,]*$/i;
 
 export interface ConversationServiceDeps {
   db: AppDb;
@@ -324,6 +325,7 @@ export class ConversationService {
     }
 
     this.applySafetyNets(turn);
+    text = sanitizeReply(text);
     if (!text) text = fallbackText(turn);
 
     let systemNote: string | null = null;
@@ -356,6 +358,13 @@ export class ConversationService {
 
   /** Redes de segurança determinísticas aplicadas depois do modelo. */
   private applySafetyNets(turn: TurnContext): void {
+    // O card de rascunho já tem Confirmar/Editar/Cancelar: opções rápidas
+    // paralelas só confundiriam (e "Confirmar chamado" por texto não é botão).
+    if (turn.blocks.some((b) => b.kind === "draft")) {
+      const before = turn.blocks.length;
+      turn.blocks = turn.blocks.filter((b) => b.kind !== "quick_replies");
+      if (turn.blocks.length < before) turn.rules.push("Opções rápidas removidas: o card do rascunho já traz Confirmar, Editar e Cancelar.");
+    }
     const asked = turn.blocks.some((b) => b.kind === "quick_replies" || b.kind === "ticket_selector" || b.kind === "draft");
     const confidence = turn.decision?.confidence;
 
@@ -695,7 +704,22 @@ function annotate(content: string, blocks: UiBlock[]): string {
         return `transferido para Suporte ${b.team}`;
     }
   });
-  return notes.length ? `${content}\n[Na tela: ${notes.join(" · ")}]` : content;
+  return notes.length ? `${content}\n${SCREEN_NOTE_OPEN}${notes.join(" · ")}${SCREEN_NOTE_CLOSE}` : content;
+}
+
+/**
+ * O histórico mostra ao modelo o que a interface exibiu. A marcação é
+ * explícita para ele não imitá-la, e qualquer cópia é removida da resposta.
+ */
+const SCREEN_NOTE_OPEN = "\n<<interface: ";
+const SCREEN_NOTE_CLOSE = " — anotação interna, não repita>>";
+
+export function sanitizeReply(text: string): string {
+  return text
+    .replace(/<<interface:[\s\S]*?>>/g, "")
+    .replace(/\[(Na tela|Evento do sistema|Mensagem do analista humano)[^\]]*\]/g, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 }
 
 function fallbackText(turn: TurnContext): string {

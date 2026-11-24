@@ -544,7 +544,7 @@ function TicketRow({ t, last }: { t: TicketView; last: boolean }) {
       <div className="-mt-1 flex min-w-0 flex-col">
         <span className="truncate text-[14px] text-ink">{t.title}</span>
         <span className="text-[12.5px] text-muted">
-          {t.number} · {isOpen(t) ? (t.overdue ? "Prazo vencido" : t.statusLabel) : `${t.statusLabel} em ${t.openedShort}`}
+          {t.number} · {isOpen(t) ? (t.overdue ? "Prazo vencido" : t.statusLabel) : `${t.statusLabel} ${t.updatedAgo}`}
         </span>
       </div>
     </div>
