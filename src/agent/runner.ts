@@ -41,7 +41,20 @@ export class AgentUnavailableError extends Error {
 }
 
 export function modelId(): string {
-  return process.env.LLM_MODEL || "gemini-2.5-flash";
+  return process.env.LLM_MODEL || "gemini-3.8-flash";
+}
+
+type ThinkingLevel = "minimal" | "low" | "medium" | "high";
+
+/**
+ * Raciocínio do modelo. Gemini 3.x usa nível ("minimal" a "high"); a família
+ * 2.5 usava orçamento em tokens. O padrão "low" equilibra qualidade de decisão,
+ * latência e custo: as regras difíceis já estão nas ferramentas.
+ */
+function thinkingConfig(model: string): { thinkingLevel: ThinkingLevel } | { thinkingBudget: number } {
+  if (/^gemini-2\./.test(model)) return { thinkingBudget: Number(process.env.LLM_THINKING_BUDGET ?? "0") };
+  const level = (process.env.LLM_THINKING_LEVEL ?? "low") as ThinkingLevel;
+  return { thinkingLevel: ["minimal", "low", "medium", "high"].includes(level) ? level : "low" };
 }
 
 export class MastraAgentRunner implements AgentRunner {
@@ -65,7 +78,6 @@ export class MastraAgentRunner implements AgentRunner {
     const requestContext = new RequestContext();
     requestContext.set(TURN_KEY, turn);
 
-    const thinkingBudget = Number(process.env.LLM_THINKING_BUDGET ?? "0");
     let text = "";
     try {
       const messages = history.map((m) => ({ role: m.role, content: m.content })) as unknown as Parameters<Agent["stream"]>[0];
@@ -73,7 +85,7 @@ export class MastraAgentRunner implements AgentRunner {
         requestContext,
         maxSteps: 8,
         modelSettings: { temperature: 0.2, maxOutputTokens: 1200, timeout: { totalMs: 60_000 } },
-        providerOptions: { google: { thinkingConfig: { thinkingBudget } } },
+        providerOptions: { google: { thinkingConfig: thinkingConfig(this.model) } },
       });
       for await (const chunk of stream.fullStream) {
         if (chunk.type === "text-delta") {

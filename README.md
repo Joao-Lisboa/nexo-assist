@@ -130,10 +130,11 @@ Tudo isso aparece no painel de decisão, na seção "Regras do service desk apli
 
 ## Escolha do modelo
 
-**Google Gemini 2.5 Flash** (configurável em `LLM_MODEL`), via `@ai-sdk/google` no Mastra.
+**Google Gemini 3.8 Flash** (configurável em `LLM_MODEL`), via `@ai-sdk/google` no Mastra.
 
-- **Custo e velocidade:** é um modelo rápido e barato com bom *tool calling*. O PRD pede uso consciente do modelo pensando em custo por conversa. O "raciocínio" fica desligado por padrão (`LLM_THINKING_BUDGET=0`), porque as decisões difíceis já estão nas ferramentas.
+- **Custo e velocidade:** é um modelo rápido e barato com bom *tool calling*. O PRD pede uso consciente do modelo pensando em custo por conversa. O "raciocínio" fica no nível baixo (`LLM_THINKING_LEVEL=low`), porque as decisões difíceis já estão nas ferramentas.
 - **Plano gratuito** no AI Studio: quem avalia consegue rodar sem cartão.
+- Comecei com o Gemini 2.5 Flash, mas o Google o retirou para contas novas (erro 404 pedindo o 3.8 Flash). Por isso o modelo é configurável e o runner trata as duas famílias: nível de raciocínio no 3.x, orçamento de tokens no 2.5.
 - **Trocar de provedor** é trocar o modelo em `src/agent/runner.ts`. O resto do sistema depende só da interface `AgentRunner`.
 
 Outras medidas de custo:

@@ -111,7 +111,7 @@ const lowConfidenceTrace: DecisionTrace = {
     { tool: "transferir_para_analista", label: "chamou um analista", input: "motivo: baixa confiança", output: "conversa na fila do Suporte N1", ok: true, durationMs: 280 },
   ],
   rules: ["Confiança 41% abaixo do mínimo de 60%: o agent não decide sozinho."],
-  model: "gemini-2.5-flash",
+  model: "gemini-3.8-flash",
   latencyMs: 2100,
   tokens: { input: 2900, output: 210 },
 };

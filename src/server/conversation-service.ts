@@ -171,6 +171,7 @@ export class ConversationService {
     const count = conversation.userMessageCount + 1;
     await this.updateConversation(conversation.id, { userMessageCount: count });
     emit({ type: "user_message", message: toMessageView(userMsg, new Map([[user.id, user]])) });
+    emit({ type: "conversation", conversation: await this.summary(await this.conversationRow(conversation.id)) });
 
     // Com um analista: o agent fica em silêncio.
     if (conversation.mode !== "agent") {
@@ -261,6 +262,7 @@ export class ConversationService {
         },
       );
       emit({ type: "message", message: toMessageView(failure, new Map()) });
+      emit({ type: "conversation", conversation: await this.summary(await this.conversationRow(conversationId)) });
       return;
     }
 

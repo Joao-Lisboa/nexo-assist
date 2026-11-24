@@ -201,7 +201,7 @@ async function main() {
   const summary = [
     `# Avaliação do agent`,
     ``,
-    `Modelo: \`${process.env.LLM_MODEL ?? "gemini-2.5-flash"}\` · ${new Date().toISOString().slice(0, 16).replace("T", " ")} UTC`,
+    `Modelo: \`${process.env.LLM_MODEL ?? "gemini-3.8-flash"}\` · ${new Date().toISOString().slice(0, 16).replace("T", " ")} UTC`,
     ``,
     `**${passed}/${scenarios.length} cenários aprovados** · ${(totalLatency / 1000 / Math.max(totalTurns, 1)).toFixed(1)} s por resposta em média · ${Math.round(totalIn / Math.max(totalTurns, 1))} tokens de entrada e ${Math.round(totalOut / Math.max(totalTurns, 1))} de saída por resposta`,
     ``,
