@@ -1,9 +1,8 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  /* config options here */
-  cacheComponents: true,
-  partialPrefetching: true,
+  // Pacotes nativos/servidor que não devem ser empacotados pelo bundler.
+  serverExternalPackages: ["@libsql/client", "libsql", "@mastra/core"],
   turbopack: {
     rules: {
       "*.css": {
