@@ -356,7 +356,7 @@ export const mostrarOpcoes = createTool({
     "Mostra botões de resposta rápida abaixo da sua mensagem (2 a 4 opções curtas). Use para perguntas fechadas, " +
     "ex.: quem é afetado ('Só eu', 'Minha equipe', 'Toda a empresa', 'Não sei') ou próximos passos.",
   inputSchema: z.object({
-    pergunta: z.string().optional().describe("Pergunta curta exibida em destaque acima das opções."),
+    pergunta: z.string().optional().describe("Pergunta curta exibida em destaque acima das opções. Omita se a pergunta já está no seu texto."),
     opcoes: z.array(z.string().max(40)).min(2).max(4),
   }),
   execute: async ({ pergunta, opcoes }, context) => {
