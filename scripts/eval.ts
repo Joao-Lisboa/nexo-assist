@@ -155,8 +155,9 @@ async function runScenario(s: Scenario, runner: MastraAgentRunner) {
   let tokensIn = 0;
   let tokensOut = 0;
   for (const text of s.turns) {
-    // Pausa entre turnos para respeitar limites por minuto dos planos gratuitos.
-    await new Promise((r) => setTimeout(r, Number(process.env.EVAL_PAUSE_MS ?? "8000")));
+    // Pausa entre turnos para respeitar limites por minuto dos planos gratuitos
+    // (no Groq, 8 mil tokens por minuto por modelo; cada resposta usa cerca de 7 mil).
+    await new Promise((r) => setTimeout(r, Number(process.env.EVAL_PAUSE_MS ?? "20000")));
     const events: StreamEvent[] = [];
     await t.conversations.handleUserMessage(await t.user(s.user ?? "u-ana"), text, (e) => events.push(e));
     const agent = events.filter((e): e is Extract<StreamEvent, { type: "message" }> => e.type === "message" && e.message.role === "agent").at(-1)?.message;
