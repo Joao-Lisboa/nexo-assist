@@ -1,4 +1,5 @@
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
+import { createGroq } from "@ai-sdk/groq";
 import { Agent } from "@mastra/core/agent";
 import { RequestContext } from "@mastra/core/request-context";
 import { buildInstructions } from "./instructions";
@@ -40,8 +41,43 @@ export class AgentUnavailableError extends Error {
   }
 }
 
+export const DEFAULT_MODEL = "groq/openai/gpt-oss-120b";
+export const DEFAULT_FALLBACKS = "groq/openai/gpt-oss-20b,google/gemini-3.8-flash,google/gemini-3.5-flash-lite";
+
 export function modelId(): string {
-  return process.env.LLM_MODEL || "gemini-3.8-flash";
+  return process.env.LLM_MODEL || DEFAULT_MODEL;
+}
+
+/**
+ * Modelos são escritos como "provedor/modelo": "groq/openai/gpt-oss-120b",
+ * "google/gemini-3.8-flash". Sem prefixo conhecido, assume Google (compatível
+ * com a configuração antiga, "gemini-3.8-flash").
+ */
+export type Provider = "google" | "groq";
+
+export interface ModelSpec {
+  provider: Provider;
+  id: string;
+  /** Forma canônica, usada em logs e no rastro de decisão. */
+  name: string;
+}
+
+export function parseModel(spec: string): ModelSpec {
+  const trimmed = spec.trim();
+  const [first, ...rest] = trimmed.split("/");
+  if ((first === "google" || first === "groq") && rest.length > 0) {
+    return { provider: first, id: rest.join("/"), name: trimmed };
+  }
+  return { provider: "google", id: trimmed, name: `google/${trimmed}` };
+}
+
+const API_KEY_ENV: Record<Provider, string> = {
+  google: "GOOGLE_GENERATIVE_AI_API_KEY",
+  groq: "GROQ_API_KEY",
+};
+
+export function hasKey(provider: Provider): boolean {
+  return !!process.env[API_KEY_ENV[provider]];
 }
 
 type ThinkingLevel = "minimal" | "low" | "medium" | "high";
@@ -51,19 +87,31 @@ type ThinkingLevel = "minimal" | "low" | "medium" | "high";
  * 2.5 usava orçamento em tokens. O padrão "low" equilibra qualidade de decisão,
  * latência e custo: as regras difíceis já estão nas ferramentas.
  */
-function thinkingConfig(model: string): { thinkingLevel: ThinkingLevel } | { thinkingBudget: number } {
+function googleThinking(model: string): { thinkingLevel: ThinkingLevel } | { thinkingBudget: number } {
   if (/^gemini-2\./.test(model)) return { thinkingBudget: Number(process.env.LLM_THINKING_BUDGET ?? "0") };
   const level = (process.env.LLM_THINKING_LEVEL ?? "low") as ThinkingLevel;
   return { thinkingLevel: ["minimal", "low", "medium", "high"].includes(level) ? level : "low" };
 }
 
-/** Modelo principal seguido dos alternativos, na ordem em que serão tentados. */
+/** Opções específicas de cada provedor: raciocínio curto para responder rápido e gastar pouco. */
+function providerOptions(m: ModelSpec): Record<string, Record<string, string | number | Record<string, string | number>>> {
+  if (m.provider === "google") return { google: { thinkingConfig: googleThinking(m.id) } };
+  if (m.id.includes("gpt-oss")) return { groq: { reasoningEffort: process.env.LLM_REASONING_EFFORT ?? "low" } };
+  return {};
+}
+
+/**
+ * Modelo principal seguido dos alternativos, na ordem em que serão tentados.
+ * Modelos de provedores sem chave configurada são ignorados, então funciona
+ * com uma chave só (Groq ou Google) ou com as duas.
+ */
 export function modelChain(): string[] {
-  const fallbacks = (process.env.LLM_FALLBACK_MODELS ?? "gemini-3.5-flash,gemini-3.5-flash-lite")
+  const fallbacks = (process.env.LLM_FALLBACK_MODELS ?? DEFAULT_FALLBACKS)
     .split(",")
     .map((m) => m.trim())
     .filter(Boolean);
-  return [...new Set([modelId(), ...fallbacks])];
+  const all = [...new Set([modelId(), ...fallbacks].map((m) => parseModel(m).name))];
+  return all.filter((m) => hasKey(parseModel(m).provider));
 }
 
 /**
@@ -116,11 +164,16 @@ export class ModelHealth {
 export class MastraAgentRunner implements AgentRunner {
   private readonly agents = new Map<string, Agent>();
   private readonly health = new ModelHealth();
-  private readonly google: ReturnType<typeof createGoogleGenerativeAI>;
 
-  constructor(apiKey = process.env.GOOGLE_GENERATIVE_AI_API_KEY) {
-    if (!apiKey) throw new Error("GOOGLE_GENERATIVE_AI_API_KEY não configurada. Copie .env.example para .env e preencha a chave.");
-    this.google = createGoogleGenerativeAI({ apiKey });
+  constructor() {
+    if (modelChain().length === 0) {
+      throw new Error("Nenhuma chave de LLM configurada. Preencha GROQ_API_KEY ou GOOGLE_GENERATIVE_AI_API_KEY no .env (veja .env.example).");
+    }
+  }
+
+  private languageModel(m: ModelSpec) {
+    if (m.provider === "groq") return createGroq({ apiKey: process.env.GROQ_API_KEY })(m.id);
+    return createGoogleGenerativeAI({ apiKey: process.env.GOOGLE_GENERATIVE_AI_API_KEY })(m.id);
   }
 
   private agentFor(model: string): Agent {
@@ -130,7 +183,7 @@ export class MastraAgentRunner implements AgentRunner {
         id: "nexo-assist",
         name: "Nexo Assist",
         instructions: ({ requestContext }) => buildInstructions(requestContext.get(TURN_KEY) as TurnContext),
-        model: this.google(model),
+        model: this.languageModel(parseModel(model)),
         tools: nexoTools,
       });
       this.agents.set(model, agent);
@@ -172,7 +225,7 @@ export class MastraAgentRunner implements AgentRunner {
       // firstChunkMs: um modelo sobrecarregado que não começa a responder em 15 s
       // é abandonado em favor do próximo, em vez de esgotar o tempo todo.
       modelSettings: { temperature: 0.2, maxOutputTokens: 1200, maxRetries: 1, timeout: { firstChunkMs: 15_000, totalMs: 45_000 } },
-      providerOptions: { google: { thinkingConfig: thinkingConfig(model) } },
+      providerOptions: providerOptions(parseModel(model)),
     });
     let text = "";
     for await (const chunk of stream.fullStream) {

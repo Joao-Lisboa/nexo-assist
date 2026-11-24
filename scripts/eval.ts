@@ -16,7 +16,7 @@ try {
   // sem .env: usa as variáveis do ambiente
 }
 import type { DecisionTrace, StreamEvent, UiBlock } from "@/domain/conversation";
-import { MastraAgentRunner } from "@/agent/runner";
+import { MastraAgentRunner, modelChain } from "@/agent/runner";
 import { setup } from "@/server/__tests__/harness";
 
 interface TurnResult {
@@ -155,6 +155,8 @@ async function runScenario(s: Scenario, runner: MastraAgentRunner) {
   let tokensIn = 0;
   let tokensOut = 0;
   for (const text of s.turns) {
+    // Pausa entre turnos para respeitar limites por minuto dos planos gratuitos.
+    await new Promise((r) => setTimeout(r, Number(process.env.EVAL_PAUSE_MS ?? "8000")));
     const events: StreamEvent[] = [];
     await t.conversations.handleUserMessage(await t.user(s.user ?? "u-ana"), text, (e) => events.push(e));
     const agent = events.filter((e): e is Extract<StreamEvent, { type: "message" }> => e.type === "message" && e.message.role === "agent").at(-1)?.message;
@@ -181,7 +183,7 @@ async function main() {
     try {
       return await original(input);
     } catch (err) {
-      if (/quota|RESOURCE_EXHAUSTED/i.test(String((err as { cause?: { message?: string } }).cause?.message ?? ""))) quotaExhausted = true;
+      if (/quota|RESOURCE_EXHAUSTED|per day/i.test(String((err as { cause?: { message?: string } }).cause?.message ?? ""))) quotaExhausted = true;
       throw err;
     }
   };
@@ -219,7 +221,7 @@ async function main() {
   const summary = [
     `# Avaliação do agent`,
     ``,
-    `Modelo: \`${process.env.LLM_MODEL ?? "gemini-3.8-flash"}\` · ${new Date().toISOString().slice(0, 16).replace("T", " ")} UTC`,
+    `Modelos: \`${modelChain().join(" → ")}\` · ${new Date().toISOString().slice(0, 16).replace("T", " ")} UTC`,
     ``,
     `**${passed}/${scenarios.length} cenários aprovados** · ${(totalLatency / 1000 / Math.max(totalTurns, 1)).toFixed(1)} s por resposta em média · ${Math.round(totalIn / Math.max(totalTurns, 1))} tokens de entrada e ${Math.round(totalOut / Math.max(totalTurns, 1))} de saída por resposta`,
     ``,

@@ -8,12 +8,12 @@ Agent de atendimento do service desk de TI da Nexo. O funcionário descreve o pr
 
 ## Como rodar
 
-Requisitos: **Node.js 20.9+** e uma chave da API do Gemini (gratuita em [aistudio.google.com](https://aistudio.google.com) → _Get API key_).
+Requisitos: **Node.js 20.12+** e uma chave de LLM gratuita. A recomendada é a do **Groq**, sem cartão, em [console.groq.com/keys](https://console.groq.com/keys). A do Gemini, em [aistudio.google.com](https://aistudio.google.com), também funciona, e as duas juntas dão mais resiliência.
 
 ```bash
 npm install
 cp .env.example .env        # no Windows: copy .env.example .env
-# edite .env e preencha GOOGLE_GENERATIVE_AI_API_KEY
+# edite .env e preencha GROQ_API_KEY (e/ou GOOGLE_GENERATIVE_AI_API_KEY)
 npm run dev
 ```
 
@@ -38,7 +38,7 @@ Abra <http://localhost:3000>. Os bancos SQLite são criados em `./data` na prime
 ### Outros comandos
 
 ```bash
-npm test            # 34 testes: regras do service desk e fluxos completos da conversa (sem LLM)
+npm test            # 35 testes: regras do service desk e fluxos completos da conversa (sem LLM)
 npm run eval        # 13 cenários com o modelo de verdade; gera docs/avaliacao.md
 npm run typecheck   # TypeScript estrito
 npm run lint
@@ -121,7 +121,7 @@ Tudo isso aparece no painel de decisão, na seção "Regras do service desk apli
 
 ## Como garanti a qualidade das decisões
 
-1. **Testes determinísticos (`npm test`, 34 testes, sem LLM).**
+1. **Testes determinísticos (`npm test`, 35 testes, sem LLM).**
    - Regras: horário útil (fim de semana, virada de expediente), SLA e chamado vencido, prioridade por impacto e urgência, duplicidade, janela de reabertura.
    - Integração do `ConversationService` com um **agent roteirizado que chama as ferramentas reais** num banco temporário: confirmação antes de criar, "sim" por texto, duplicidade, privacidade, chamado vencido, transferência pausando o agent e retomando com a fala do analista no histórico, confiança baixa, caso crítico, sistema de chamados fora do ar (503 com o rascunho preservado), limite de mensagens e concorrência entre analistas.
 2. **Avaliação com o modelo de verdade (`npm run eval`).** São 13 cenários que cobrem as histórias do PRD. Cada um verifica o *resultado observável* do turno (blocos exibidos, transferência e motivo, rascunho e prioridade, intenção registrada), e não o texto, que varia entre execuções. O script gera `docs/avaliacao.md` com aprovação, intenção, confiança e tempo por cenário. Use-o como regressão ao mexer no prompt ou trocar de modelo.
@@ -131,22 +131,20 @@ Tudo isso aparece no painel de decisão, na seção "Regras do service desk apli
 
 ## Escolha do modelo
 
-**Google Gemini 3.8 Flash** (configurável em `LLM_MODEL`), via `@ai-sdk/google` no Mastra.
+**Principal: `openai/gpt-oss-120b` no Groq.** Alternativos: `gpt-oss-20b` no Groq e Gemini 3.8 Flash e 3.5 Flash-Lite no Google. Tudo é configurável em `LLM_MODEL` e `LLM_FALLBACK_MODELS`, no formato `provedor/modelo`.
 
-- **Custo e velocidade:** é um modelo rápido e barato com bom *tool calling*. O PRD pede uso consciente do modelo pensando em custo por conversa. O "raciocínio" fica no nível baixo (`LLM_THINKING_LEVEL=low`), porque as decisões difíceis já estão nas ferramentas.
-- **Plano gratuito** no AI Studio: quem avalia consegue rodar sem cartão. Atenção: no plano gratuito, o limite é de **20 chamadas por dia para cada modelo**, e cada resposta do agent faz de 2 a 3 chamadas. Para uma rodada completa de `npm run eval` (13 cenários), é preciso uma chave com faturamento ativado ou espalhar a avaliação entre os modelos da cadeia.
-- **Resiliência:** se o modelo principal estiver sobrecarregado (503), sem cota (429) ou indisponível (404), o agent tenta os modelos de `LLM_FALLBACK_MODELS`. Ele só troca de modelo se nada aconteceu no turno ainda, para não repetir ações. Modelo que não começa a responder em 15 s também é trocado, e quem falhou vai para o fim da fila por 3 minutos, para as mensagens seguintes não esperarem por ele de novo. Se todos falharem, a resposta oferece "Tentar de novo", que repete a pergunta original, e "Falar com um analista", que não depende do modelo. O modelo que respondeu aparece no painel de decisão.
-- Comecei com o Gemini 2.5 Flash, mas o Google o retirou para contas novas (erro 404 pedindo o 3.8 Flash). Por isso o modelo é configurável e o runner trata as duas famílias: nível de raciocínio no 3.x, orçamento de tokens no 2.5.
-- **Trocar de provedor** é trocar o modelo em `src/agent/runner.ts`. O resto do sistema depende só da interface `AgentRunner`.
+- **Bom com ferramentas e rápido.** O Groq serve o gpt-oss com latência baixa, e o raciocínio fica em `low`: as decisões difíceis já estão nas ferramentas, então não vale pagar tempo e tokens por raciocínio longo.
+- **Plano gratuito que dá para usar.** Comecei com o Gemini, mas o plano gratuito dele permite só **20 chamadas por dia para cada modelo**, e cada resposta do agent faz de 2 a 3 chamadas. O limite acabou durante os testes. O plano gratuito do Groq, sem cartão, permite 1.000 requisições e 200 mil tokens por dia para cada modelo. Também passei por modelo retirado para contas novas (404 no Gemini 2.5 Flash) e por sobrecarga (503) no Gemini 3.x.
+- **Por isso a cadeia de modelos, que mistura provedores.** Se um modelo falha por sobrecarga (503), cota (429), lentidão (não começa a responder em 15 s) ou indisponibilidade (404), o agent tenta o próximo. Ele só troca se nada aconteceu no turno ainda, para não repetir ações, e o modelo que falhou vai para o fim da fila por 3 minutos. Modelos de provedores sem chave são ignorados, então o projeto roda com uma chave só. Se todos falharem, a resposta oferece "Tentar de novo", que repete a pergunta original, e "Falar com um analista", que não depende do modelo. O modelo que respondeu aparece no painel de decisão.
+- **Trocar de provedor** é configuração. O resto do sistema depende só da interface `AgentRunner`.
 
 Outras medidas de custo:
 
+- O registro de entendimento vai na mesma rodada das primeiras ferramentas.
 - Janela de histórico de 16 mensagens, com anotações curtas do que a interface mostrou em vez de reenviar os resultados das ferramentas.
 - Central de ajuda por palavras-chave, sem embeddings.
-- Confirmações e cancelamentos resolvidos sem LLM.
+- Confirmações, cancelamentos e pedidos de analista resolvidos sem LLM.
 - Contagem de tokens visível em cada resposta.
-
----
 
 ## Principais trade-offs
 
@@ -171,8 +169,8 @@ Outras medidas de custo:
 
 Não publiquei uma versão. Para publicar (por exemplo no Railway ou no Render, que mantêm disco persistente para o SQLite):
 
-1. Configure `GOOGLE_GENERATIVE_AI_API_KEY`, `SESSION_SECRET` e `DATA_DIR` (apontando para o volume persistente) como variáveis de ambiente da plataforma. As chaves nunca ficam no código.
-2. Ajuste `MAX_AGENT_TURNS_PER_DAY` e use uma chave com cota limitada no Google AI Studio, para evitar abuso e custo inesperado. O limite de 30 mensagens por sessão e de 10 por minuto por pessoa já vem ativo.
+1. Configure `GROQ_API_KEY` (e/ou `GOOGLE_GENERATIVE_AI_API_KEY`), `SESSION_SECRET` e `DATA_DIR` (apontando para o volume persistente) como variáveis de ambiente da plataforma. As chaves nunca ficam no código.
+2. Ajuste `MAX_AGENT_TURNS_PER_DAY` e use chaves de plano gratuito ou com teto de gasto, para evitar abuso e custo inesperado. O limite de 30 mensagens por sessão e de 10 por minuto por pessoa já vem ativo.
 3. Rode `npm run build && npm start`.
 
 Na Vercel, o sistema de arquivos não é persistente: seria preciso trocar o SQLite local por Turso (mesmo cliente libSQL; só muda a URL).
