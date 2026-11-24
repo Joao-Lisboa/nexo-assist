@@ -47,7 +47,7 @@ export class ScriptedRunner implements AgentRunner {
   }
 }
 
-export async function setup(opts: { failureRate?: number } = {}) {
+export async function setup(opts: { failureRate?: number; runner?: AgentRunner } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "nexo-test-"));
   const client = createClient({ url: `file:${path.join(dir, "app.db")}` });
   for (const sql of APP_BOOTSTRAP_SQL) await client.execute(sql);
@@ -59,7 +59,8 @@ export async function setup(opts: { failureRate?: number } = {}) {
 
   const tickets = createTicketClient(service, { attempts: 2, baseDelayMs: 1 });
   const runner = new ScriptedRunner();
-  const conversations = new ConversationService({ db, tickets, runner: () => runner, now: () => NOW });
+  const active: AgentRunner = opts.runner ?? runner;
+  const conversations = new ConversationService({ db, tickets, runner: () => active, now: () => NOW });
   const console = new ConsoleService(db, tickets, conversations, () => NOW);
 
   const user = async (id: string) => {
