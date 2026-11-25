@@ -168,7 +168,9 @@ async function runScenario(s: Scenario, runner: MastraAgentRunner) {
     tokensOut += agent?.trace?.tokens?.output ?? 0;
   }
   const last = results.at(-1)!;
-  const failure = s.check(last, results);
+  // Uma resposta de falha do modelo nunca conta como acerto, mesmo que tenha botões.
+  const unavailable = results.find((r) => r.trace?.model === "indisponível");
+  const failure = unavailable ? "o modelo não respondeu (indisponível ou sem cota)" : s.check(last, results);
   return { failure, last, latency, tokensIn, tokensOut, turns: s.turns.length };
 }
 
